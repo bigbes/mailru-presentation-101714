@@ -1,0 +1,392 @@
+===============================================================================
+                           Tarantool: Evolution
+===============================================================================
+
+* Первый opensource релиз Tarantool - 2010 год - модульный конструктор серверов используя C
+    - mod_silverbox (iproto + memcached)
+    - mod_feeder (recovery)
+* Tarantool/Silverbox -> Tarantool/Box (1.4.1) - становится монолитной БД (вплоть до 1.5)
+* Добавили LuaJIT (1.4.2)
+* Tarantool/Box -> Tarantool (1.6) - модульный конструктор серверов используя Lua
+
+===============================================================================
+                        Чем стал Tarantool? (1)
+===============================================================================
+
+.. code:: lua
+
+    box.cfg{} -- configure database
+    hosts = box.space.hosts
+    if not hosts then -- check space existense
+        hosts = box.schema.create_space('hosts')
+        hosts:create_index('primary', {parts = {1, 'STR'}})
+    end
+    local function handler(self) -- create handler function
+        local host = self.req.peer.host
+        local response = {
+            host = host; counter = hosts:inc(host);
+        }
+        self:render{ json = response }
+    end
+    httpd = require('http.server') -- require module
+    server = httpd.new('127.0.0.1', 8080)
+    server:route({path='/'}, handler):start() -- start server
+
+===============================================================================
+                        Чем стал Tarantool? (2)
+===============================================================================
+
+.. code:: lua
+
+    local socket = require('socket')
+    local fiber = require('fiber')
+    local log = require('log')
+
+    local function handler(sc, from)
+        log.info('%s:%d connected',
+            from.host, from.port)
+        while true do
+            while not sc:readable() do fiber.sleep(0.01) end
+            local msg = sc:sysread()
+            sc:write(msg)
+        end
+    end
+    local server = socket.tcp_server('127.0.0.1', '8080', {
+        handler = handler,
+        server = 'echo'
+    })
+
+===============================================================================
+                        Configuring database
+===============================================================================
+
+.. code:: lua
+
+    tarantool> box.cfg{}
+    ../interactive C> version 1.6.3-512-g2231e3d
+    ../interactive C> log level 5
+    ../interactive I> mapping 1073741824 bytes for a shared arena...
+    ../spawner C> initialized
+    ../interactive I> initializing an empty data directory
+    ../interactive I> creating `./00000000000000000000.snap.inprogress'
+    ../interactive I> saving snapshot `./00000000000000000000.snap.inprogress'
+    ../interactive I> done
+    ../interactive I> ready to accept requests
+    ---
+    ...
+
+===============================================================================
+                        One Port to Rule em All
+===============================================================================
+
+.. code:: lua
+
+    tarantool> box.cfg{ listen = 3301 }
+    -- iproto, replication
+
+.. image:: ring.png
+    :align: center
+
+===============================================================================
+               Data Definition Language (spaces)
+===============================================================================
+
+.. code:: lua
+
+    tarantool> box.schema.create_space('liverwurst')
+    .. wal I> creating `./00000000000000000000.xlog.inprogress'
+    ---
+    - index: []
+      on_replace: 'function: 0x41ccecc8'
+      temporary: false
+      id: 512
+      engine: memtx
+      enabled: false
+      name: liverwurst
+      field_count: 0
+    - created
+    ...
+
+===============================================================================
+                   Data Definition Language (indexes)
+===============================================================================
+
+.. code:: lua
+
+    tarantool> box.space.liverwurst:create_index('primary',
+                {parts = {1, 'STR'}})
+    ---
+    - unique: true
+      parts:
+      - type: STR
+        fieldno: 1
+      id: 0
+      space_id: 512
+      name: primary
+      type: TREE
+    ...
+
+===============================================================================
+                   Data Definition Language (MP keys/index types)
+===============================================================================
+
+.. code:: lua
+
+    tarantool> box.space.liverwurst:create_index('primary',
+                {parts = {1, 'NUM', 2, 'STR'}})
+    tarantool> box.space.liverwurst:create_index('primary',
+                {parts = {3, 'NUM', 2, 'STR', 1, 'NUM'}})
+    tarantool> box.space.liverwurst:create_index('primary',
+                {parts = {1, 'NUM', 2, 'STR'}, type='HASH'})
+    tarantool> box.space.liverwurst:create_index('primary',
+                {parts = {2, 'STR'}, type='BITSET'})
+
+===============================================================================
+                 Data Definition Language (system spaces 0)
+===============================================================================
+
+.. code:: lua
+
+    tarantool> box.space._user.index.name:select{'bigbes'}
+    ---
+    ...
+    tarantool> box.schema.user.create('bigbes', {password='mypass'})
+    ---
+    ...
+    tarantool> box.space._user.index.name:select{'bigbes'}
+    ---
+    - - [3, 1, 'bigbes', 'user', {'chap-sha1': '...'}]
+    ...
+
+===============================================================================
+                 Data Definition Language (system spaces 1)
+===============================================================================
+
+.. code:: lua
+
+    tarantool> box.space._space:select{}
+    ---
+    - - [272, 1, '_schema', 'memtx', 0]
+      - [280, 1, '_space', 'memtx', 0]
+      - [288, 1, '_index', 'memtx', 0]
+                      ...
+      - [512, 1, 'liverwurst', 'memtx', 0, '']
+    ...
+    tarantool> box.space._index:select{}
+    ---
+    - - [272, 0, 'primary', 'tree', 1, 1, 0, 'str']
+                       ...
+      - [320, 1, 'uuid', 'tree', 1, 1, 1, 'str']
+      - [512, 0, 'primary', 'tree', 1, 1, 0, 'STR']
+    ...
+
+===============================================================================
+                 Data Definition Language (system spaces 2)
+===============================================================================
+
+* :code:`_schema`, :code:`_cluster` - Tarantool metadata
+
+.. code:: lua
+
+    tarantool> box.space._schema:select{}
+    ---
+    - - ['cluster', '27c1d9f5-6fee-4619-bbe6-f229a0950c2f']
+      - ['version', 1, 6]
+    ...
+    tarantool> box.space._cluster:select{}
+    ---
+    - - [1, 'c3f3a50f-f658-46e3-a787-0716d5931af5']
+    ...
+
+* :code:`_space`, :code:`_index`, :code:`_func`
+* :code:`_user`, :code:`_priv`
+
+===============================================================================
+                       Authorization / Grants (granted)
+===============================================================================
+
+.. code:: lua
+
+    box.cfg{ listen=3301 }
+    function myfunc(arg) return arg end
+    box.schema.user.create('bigbes', {password='passw'})
+    box.schema.func.create('myfunc')
+    box.schema.user.grant('bigbes', 'execute', 'function', 'myfunc')
+
+    local box = remote.new('localhost', 3301,
+                           {user = 'bigbes', password = 'passw'})
+    log.info(json.encode(box:call('myfunc', {1, 2, 3})))
+
+.. code:: lua
+
+    ... I> [[1, 2, 3]]
+
+===============================================================================
+                            Authorization / Grants
+===============================================================================
+
+:code:`box.schema.user,grant(who, types, object, name)`
+:code:`box.schema.user,grant(who, types, 'universe')`
+
+* Who: :code:`role` (MySQL-like roles), :code:`user`
+* Objects: :code:`space`, :code:`functions` and special :code:`universe`
+* Types for spaces/universe: :code:`read`, :code:`write`
+* Types for functions/universe: :code:`execute`
+
+===============================================================================
+                                Consistency
+===============================================================================
+
+* Write Ahead Logging (aka WAL)
+* Snapshots + :code:`snapshot_daemon`
+* Asynchronous Master-Master replication
+
+===============================================================================
+                                Replication (Config)
+===============================================================================
+
+.. code:: bash
+
+    $ cat master1/master.lua
+        require('console').listen(3305)
+        box.cfg { listen = 3301 }
+        test = box.schema.create_space('test')
+        test:create_index('primary', { parts = {1, 'STR'} })
+        box.schema.user.create('bigbes', {password = 'pass'})
+        box.schema.user.grant('bigbes','read,write,execute','universe')
+        require('fiber').sleep(10)
+        box.cfg{replication_source='tcp://bigbes:pass@localhost:3302'}
+
+    $ cat master2/master.lua
+        require('console').listen(3307)
+        box.cfg { listen = 3302,
+          replication_source='tcp://bigbes:pass@localhost:3301'}
+        require('fiber').sleep(10)
+        test = box.schema.test
+
+===============================================================================
+                                Replication (Config)
+===============================================================================
+
+.. code:: bash
+
+    $ echo 'test:insert{"lalka", 2, 3}' | nc localhost 3307
+    - ['lalka', 2, 3]
+    $ echo 'test:select{}' | nc localhost 3305
+    - - ['lalka', 2, 3]
+    $ echo 'test:insert{"lalochka", 2, 3}' | nc localhost 3305
+    - ['lalochka', 2, 3]
+    $ echo 'test:select{}' | nc localhost 3307
+    - - ['lalka', 2, 3]
+      - ['lalochka', 2, 3]
+    $ echo 'test:select{}' | nc localhost 3305
+    - - ['lalka', 2, 3]
+      - ['lalochka', 2, 3]
+
+===============================================================================
+                       Authorization / Grants (denied)
+===============================================================================
+
+.. code:: lua
+
+    box.cfg{ listen=3301 }
+    function myfunc(arg) return arg end
+    box.schema.user.create('bigbes', {password='passw'})
+    box.schema.func.create('myfunc')
+
+    local box = remote.new('localhost', 3301,
+            {user = 'bigbes', password = 'passw'})
+    log.info(json.encode(box:call('myfunc', {1, 2, 3})))
+
+.. code:: lua
+
+    ... F> Execute access denied for user 'bigbes' to function 'myfunc'
+
+===============================================================================
+                                  DML / msgpack
+===============================================================================
+
+.. code:: lua
+
+    -- store documents
+    box.space.test:insert{'', {}}
+
+===============================================================================
+                                 DiskStore
+===============================================================================
+
+Использует чертовски быструю библиотеку **Sophia**, написанную Дмитрием Симоненко
+
+* https://github.com/pmwkaa/sophia
+* http://sphia.org/benchmarks.html
+
+.. code:: lua
+
+    space = box.schema.create_space('test',
+            { engine = 'sophia', id = 100 })
+    index = space:create_index('primary',
+            { type = 'tree', parts = {1, 'num'} })
+
+===============================================================================
+                         Инфраструктура (Часть 1)
+===============================================================================
+
+* Обычная система тестирования. Несколько видов тестов:
+    - Functional Testing (со стороны клиента и сервера)
+    - Unit Testing
+* Нагрузочное параллельное тестирование (в процессе)
+* Периодические YCSB Benchmarks
+* Micro-Benchmarks (в процессе)
+
+===============================================================================
+                         Инфраструктура (Часть 2)
+===============================================================================
+
+* Во главе Buildbot (http://build.tarantool.org)
+* Сборка Stable + Master
+* RPM (CentOS/RedHat, Fedora) - Mock
+* DEB (Debian, Ubuntu) - debootstrap + shell script
+* Много другого
+
+===============================================================================
+                      Что не нравилось в Tarantool (1)
+===============================================================================
+
+* Тяжело в учении (легко в бою ?)
+* Плохо интегрированный Lua
+* Огромные и непонятные конфиг-файлы.
+* Нет Diskstore
+* Отсутствие триггеров
+* Наличие путающего и "странного" SQL-like языка в клиенте
+
+===============================================================================
+                      Что не нравилось в Tarantool (2)
+===============================================================================
+
+* Использование цифр, вместо названий для Space/Index
+* Строки 4/8 байт неотличимы от чисел + нет бесшовной интеграции NUM и NUM64
+* Лишний шаг, чтобы проинициализировать Tarantool (--init-storage flag)
+* (лично мне) Наличие memcached протокола
+* Лишний порт (read only)
+
+===============================================================================
+                                  Что изменилось? (1)
+===============================================================================
+
+* Теперь всё крутится вокруг Lua, например:
+    - Запуская Tarantool вы попадёте в Lua консоль
+    - Избавились от tarantool.cfg в пользу init.lua
+* Наличие "System Space" для того, чтобы содержать всю мета-информацию для Tarantool
+* Data Definition Language (in runtime) + Space/Index приобрели имена
+
+===============================================================================
+                                  Что изменилось? (2)
+===============================================================================
+
+* Tuples хранятся в формате Msgpack. Для общения с клиентами/другими Tarantool
+  (по listen порту) так-же используется Msgpack
+* primary_port, secondary_port, replication_port -> listen
+* Мы научились пользоваться require и починили его :)
+* Мы завели Disk Storage (используя brand new "Sophia" как бэкенд)
+* Избавились от Memcached протокола
+
