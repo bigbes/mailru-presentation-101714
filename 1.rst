@@ -43,8 +43,7 @@
     local log = require('log')
 
     local function handler(sc, from)
-        log.info('%s:%d connected',
-            from.host, from.port)
+        log.info('%s:%d connected', from.host, from.port)
         while true do
             while not sc:readable() do fiber.sleep(0.01) end
             local msg = sc:sysread()
@@ -62,33 +61,26 @@
 
 .. code:: lua
 
-    tarantool> box.cfg{}
-    ../interactive C> version 1.6.3-512-g2231e3d
-    ../interactive C> log level 5
-    ../interactive I> mapping 1073741824 bytes for a shared arena...
-    ../spawner C> initialized
-    ../interactive I> initializing an empty data directory
-    ../interactive I> creating `./00000000000000000000.snap.inprogress'
-    ../interactive I> saving snapshot `./00000000000000000000.snap.inprogress'
-    ../interactive I> done
-    ../interactive I> ready to accept requests
+    tarantool> box.cfg{
+        logger = 'tarantool.log',
+        wal_mode = 'none',
+        slab_alloc_arena = 1
+    }
     ---
+    ...
+    tarantool> box.cfg
+    ---
+    - too_long_threshold: 0.5
+      slab_alloc_factor: 2
+      slab_alloc_minimal: 64
+      background: false
+      slab_alloc_arena: 1
+      log_level: 5
+      (...)
     ...
 
 ===============================================================================
-                        One Port to Rule em All
-===============================================================================
-
-.. code:: lua
-
-    tarantool> box.cfg{ listen = 3301 }
-    -- iproto, replication
-
-.. image:: ring.png
-    :align: center
-
-===============================================================================
-               Data Definition Language (spaces)
+                               DDL (spaces)
 ===============================================================================
 
 .. code:: lua
@@ -108,7 +100,7 @@
     ...
 
 ===============================================================================
-                   Data Definition Language (indexes)
+                                 DDL (indexes)
 ===============================================================================
 
 .. code:: lua
@@ -127,22 +119,22 @@
     ...
 
 ===============================================================================
-                   Data Definition Language (MP keys/index types)
+                          DDL (MP keys/index types)
 ===============================================================================
 
 .. code:: lua
 
-    tarantool> box.space.liverwurst:create_index('primary',
+    tarantool> box.space.liverwurst:create_index('secondary',
                 {parts = {1, 'NUM', 2, 'STR'}})
-    tarantool> box.space.liverwurst:create_index('primary',
+    tarantool> box.space.liverwurst:create_index('evio',
                 {parts = {3, 'NUM', 2, 'STR', 1, 'NUM'}})
-    tarantool> box.space.liverwurst:create_index('primary',
+    tarantool> box.space.liverwurst:create_index('spehash',
                 {parts = {1, 'NUM', 2, 'STR'}, type='HASH'})
-    tarantool> box.space.liverwurst:create_index('primary',
+    tarantool> box.space.liverwurst:create_index('cubitset',
                 {parts = {2, 'STR'}, type='BITSET'})
 
 ===============================================================================
-                 Data Definition Language (system spaces 0)
+                            DDL (system spaces 0)
 ===============================================================================
 
 .. code:: lua
@@ -159,7 +151,7 @@
     ...
 
 ===============================================================================
-                 Data Definition Language (system spaces 1)
+                            DDL (system spaces 1)
 ===============================================================================
 
 .. code:: lua
@@ -181,7 +173,7 @@
     ...
 
 ===============================================================================
-                 Data Definition Language (system spaces 2)
+                             DDL (system spaces 2)
 ===============================================================================
 
 * :code:`_schema`, :code:`_cluster` - Tarantool metadata
@@ -200,6 +192,25 @@
 
 * :code:`_space`, :code:`_index`, :code:`_func`
 * :code:`_user`, :code:`_priv`
+
+===============================================================================
+                       Authorization / Grants (denied)
+===============================================================================
+
+.. code:: lua
+
+    box.cfg{ listen=3301 }
+    function myfunc(arg) return arg end
+    box.schema.user.create('bigbes', {password='passw'})
+    box.schema.func.create('myfunc')
+
+    local box = remote.new('localhost', 3301,
+            {user = 'bigbes', password = 'passw'})
+    log.info(json.encode(box:call('myfunc', {1, 2, 3})))
+
+.. code:: lua
+
+    ... F> Execute access denied for user 'bigbes' to function 'myfunc'
 
 ===============================================================================
                        Authorization / Grants (granted)
@@ -225,8 +236,8 @@
                             Authorization / Grants
 ===============================================================================
 
-:code:`box.schema.user,grant(who, types, object, name)`
-:code:`box.schema.user,grant(who, types, 'universe')`
+:code:`box.schema.user.grant(who, types, object, name)`
+:code:`box.schema.user.grant(who, types, 'universe')`
 
 * Who: :code:`role` (MySQL-like roles), :code:`user`
 * Objects: :code:`space`, :code:`functions` and special :code:`universe`
@@ -234,15 +245,23 @@
 * Types for functions/universe: :code:`execute`
 
 ===============================================================================
-                                Consistency
+                                Persistence
 ===============================================================================
 
-* Write Ahead Logging (aka WAL)
+* Write Ahead Logging
 * Snapshots + :code:`snapshot_daemon`
-* Asynchronous Master-Master replication
+
+.. code:: bash
+
+    $ ls -al *.{xlog,snap}
+    00000000000000000000.snap
+    00000000000000000050.xlog
+    00000000000000000100.xlog
+    00000000000000000150.xlog
+    00000000000000000150.snap
 
 ===============================================================================
-                                Replication (Config)
+                                Master-Master Replication (Config)
 ===============================================================================
 
 .. code:: bash
@@ -284,38 +303,39 @@
       - ['lalochka', 2, 3]
 
 ===============================================================================
-                       Authorization / Grants (denied)
+                                  MsgPack
 ===============================================================================
 
-.. code:: lua
-
-    box.cfg{ listen=3301 }
-    function myfunc(arg) return arg end
-    box.schema.user.create('bigbes', {password='passw'})
-    box.schema.func.create('myfunc')
-
-    local box = remote.new('localhost', 3301,
-            {user = 'bigbes', password = 'passw'})
-    log.info(json.encode(box:call('myfunc', {1, 2, 3})))
-
-.. code:: lua
-
-    ... F> Execute access denied for user 'bigbes' to function 'myfunc'
+* это как BSON, но компактный и быстрый
+* schema-less хранение документов
+* ~ на 30 % компактнее чем Tarantool 1.5
+* хранение данных без преобразования
 
 ===============================================================================
-                                  DML / msgpack
+                                     DML
 ===============================================================================
 
 .. code:: lua
 
     -- store documents
-    box.space.test:insert{'', {}}
+    tarantool> box.space.liverwurst:insert{
+        935, 'blikh@corp.mail.ru',
+            {gender='male', height=183, smoker=true},
+            {100500, 'horse', 'chair', 28, false}
+    }
+    ---
+    - [935, 'blikh@corp.mail.ru',
+            {'gender': 'male', 'height': 183, 'smoker': true},
+            [100500, 'horse', 'chair', 28, false]
+    ]
+    ...
+
 
 ===============================================================================
                                  DiskStore
 ===============================================================================
 
-Использует чертовски быструю библиотеку **Sophia**, написанную Дмитрием Симоненко
+Использует быструю библиотеку **Sophia**, написанную Дмитрием Симоненко
 
 * https://github.com/pmwkaa/sophia
 * http://sphia.org/benchmarks.html
@@ -327,16 +347,50 @@
     index = space:create_index('primary',
             { type = 'tree', parts = {1, 'num'} })
 
+
+===============================================================================
+                              Transactions
+===============================================================================
+
+* lock-free, wait-free
+* нельзя yeild'ится внутри транзакции
+* multi-space
+
+.. code:: lua
+
+    box.begin()
+    money = 1.00
+    box.space.test:update({999}, {{'-', 3, money}})
+    box.space.test:update({1000}, {{'+', 3, money}})
+    box.commit()
+
+===============================================================================
+                        One Port to Rule em All
+===============================================================================
+
+.. code:: lua
+
+    tarantool> box.cfg{ listen = 3301 }
+    -- iproto, replication, semi-admin
+
+.. image:: ring.png
+    :align: center
+    :scale: 65%
+
+
 ===============================================================================
                          Инфраструктура (Часть 1)
 ===============================================================================
 
-* Обычная система тестирования. Несколько видов тестов:
-    - Functional Testing (со стороны клиента и сервера)
-    - Unit Testing
-* Нагрузочное параллельное тестирование (в процессе)
-* Периодические YCSB Benchmarks
-* Micro-Benchmarks (в процессе)
+* Тестовая система. (Functional/Unit testing)
+* Нагрузочное параллельное тестирование
+* YCSB Benchmarks
+* Code Review
+
+
+.. image:: qa.png
+    :align: center
+    :scale: 80%
 
 ===============================================================================
                          Инфраструктура (Часть 2)
@@ -344,49 +398,46 @@
 
 * Во главе Buildbot (http://build.tarantool.org)
 * Сборка Stable + Master
-* RPM (CentOS/RedHat, Fedora) - Mock
-* DEB (Debian, Ubuntu) - debootstrap + shell script
-* Много другого
+* RPM (CentOS/RedHat, Fedora) - rpmbuild + mock
+* DEB (Debian, Ubuntu) - debootstrap + shell scripts
+* Gentoo, FreeBSD, ArchLinux, OS X, ..
 
 ===============================================================================
-                      Что не нравилось в Tarantool (1)
+                         Как с нами работать?
 ===============================================================================
 
-* Тяжело в учении (легко в бою ?)
-* Плохо интегрированный Lua
-* Огромные и непонятные конфиг-файлы.
-* Нет Diskstore
-* Отсутствие триггеров
-* Наличие путающего и "странного" SQL-like языка в клиенте
+* python: http://github.com/tarantool/tarantool-python/
+* php:    http://github.com/tarantool/tarantool-php/
+* perl:   http://search.cpan.org/~unera/DR-Tarantool-0.44/
+* java:   http://dgreenru.gihub.io/tarantool-java/
+* C:      http://github.com/tarantool/tarantool-c/
+    * Пример - http://github.com/tarantool/nosqlbench
+
 
 ===============================================================================
-                      Что не нравилось в Tarantool (2)
+                         Примеры библиотек
 ===============================================================================
 
-* Использование цифр, вместо названий для Space/Index
-* Строки 4/8 байт неотличимы от чисел + нет бесшовной интеграции NUM и NUM64
-* Лишний шаг, чтобы проинициализировать Tarantool (--init-storage flag)
-* (лично мне) Наличие memcached протокола
-* Лишний порт (read only)
+* http://try.tarantool.org: https://github.com/tarantool/try
+
+* Queue: https://github.com/tarantool/queue-collection
+* HTTP: https://github.com/tarantool/http
+* Expires: https://github.com/tarantool/expirationd
 
 ===============================================================================
-                                  Что изменилось? (1)
+                              Миграция с 1.5
 ===============================================================================
 
-* Теперь всё крутится вокруг Lua, например:
-    - Запуская Tarantool вы попадёте в Lua консоль
-    - Избавились от tarantool.cfg в пользу init.lua
-* Наличие "System Space" для того, чтобы содержать всю мета-информацию для Tarantool
-* Data Definition Language (in runtime) + Space/Index приобрели имена
+Utility: https://github.com/tarantool/compat-flow
+
+.. image:: migration.jpg
+    :align: center
+    :scale: 65%
 
 ===============================================================================
-                                  Что изменилось? (2)
+                              Спасибо!
 ===============================================================================
 
-* Tuples хранятся в формате Msgpack. Для общения с клиентами/другими Tarantool
-  (по listen порту) так-же используется Msgpack
-* primary_port, secondary_port, replication_port -> listen
-* Мы научились пользоваться require и починили его :)
-* Мы завели Disk Storage (используя brand new "Sophia" как бэкенд)
-* Избавились от Memcached протокола
-
+.. image:: ending.jpg
+    :align: center
+    :scale: 90%
